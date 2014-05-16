@@ -17,7 +17,12 @@ Puppet::Type.type(:cs_order).provide(:crm, :parent => Puppet::Provider::Corosync
     instances = []
 
     cmd = [ command(:crm), 'configure', 'show', 'xml' ]
-    raw, status = Puppet::Util::SUIDManager.run_and_capture(cmd)
+    if Puppet::PUPPETVERSION.to_f < 3.4
+      raw, status = Puppet::Util::SUIDManager.run_and_capture(cmd)
+    else
+      raw = Puppet::Util::Execution.execute(cmd)
+      status = raw.exitstatus
+    end
     doc = REXML::Document.new(raw)
 
     doc.root.elements['configuration'].elements['constraints'].each_element('rsc_order') do |e|
@@ -35,13 +40,21 @@ Puppet::Type.type(:cs_order).provide(:crm, :parent => Puppet::Provider::Corosync
         second = items['then']
       end
 
+      if items['symmetrical']
+        symmetrical = (items['symmetrical'] == 'true')
+      else
+        # Default: symmetrical is true unless explicitly defined.
+        symmetrical = true
+      end
+
       order_instance = {
-        :name       => items['id'],
-        :ensure     => :present,
-        :first      => first,
-        :second     => second,
-        :score      => items['score'],
-        :provider   => self.name
+        :name           => items['id'],
+        :ensure         => :present,
+        :first          => first,
+        :second         => second,
+        :score          => items['score'],
+        :symmetrical    => symmetrical,
+        :provider       => self.name
       }
       instances << new(order_instance)
     end
@@ -52,12 +65,13 @@ Puppet::Type.type(:cs_order).provide(:crm, :parent => Puppet::Provider::Corosync
   # of actually doing the work.
   def create
     @property_hash = {
-      :name       => @resource[:name],
-      :ensure     => :present,
-      :first      => @resource[:first],
-      :second     => @resource[:second],
-      :score      => @resource[:score],
-      :cib        => @resource[:cib],
+      :name         => @resource[:name],
+      :ensure       => :present,
+      :first        => @resource[:first],
+      :second       => @resource[:second],
+      :score        => @resource[:score],
+      :symmetrical  => @resource[:symmetrical],
+      :cib          => @resource[:cib],
     }
   end
 
@@ -83,6 +97,10 @@ Puppet::Type.type(:cs_order).provide(:crm, :parent => Puppet::Provider::Corosync
     @property_hash[:score]
   end
 
+  def symmetrical
+    @property_hash[:symmetrical]
+  end
+
   # Our setters for the first and second primitives and score.  Setters are
   # used when the resource already exists so we just update the current value
   # in the property hash and doing this marks it to be flushed.
@@ -98,6 +116,10 @@ Puppet::Type.type(:cs_order).provide(:crm, :parent => Puppet::Provider::Corosync
     @property_hash[:score] = should
   end
 
+  def symmetrical=(should)
+    @property_hash[:symmetrical] = should
+  end
+
   # Flush is triggered on anything that has been detected as being
   # modified in the property_hash.  It generates a temporary file with
   # the updates that need to be made.  The temporary file is then used
@@ -106,7 +128,7 @@ Puppet::Type.type(:cs_order).provide(:crm, :parent => Puppet::Provider::Corosync
     unless @property_hash.empty?
       updated = 'order '
       updated << "#{@property_hash[:name]} #{@property_hash[:score]}: "
-      updated << "#{@property_hash[:first]} #{@property_hash[:second]}"
+      updated << "#{@property_hash[:first]} #{@property_hash[:second]} symmetrical=#{@property_hash[:symmetrical].to_s}"
       Tempfile.open('puppet_crm_update') do |tmpfile|
         tmpfile.write(updated)
         tmpfile.flush

@@ -10,8 +10,13 @@
 # [*enable_secauth*]
 #   Controls corosync's ability to authenticate and encrypt multicast messages.
 #
+# [*authkey_source*]
+#   Allows to use either a file or a string as a authkey.
+#   Defaults to 'file'. Can be set to 'string'.
+#
 # [*authkey*]
-#   Specifies the path to the CA which is used to sign Corosync's certificate.
+#   Specifies the path to the CA which is used to sign Corosync's certificate if
+#   authkey_source is 'file' or the actual authkey if 'string' is used instead.
 #
 # [*threads*]
 #   How many threads you are going to let corosync use to encode and decode
@@ -20,14 +25,18 @@
 #
 # [*bind_address*]
 #   The ip address we are going to bind the corosync daemon too.
+#   Can be specified as an array to have multiple rings (multicast only).
 #
 # [*port*]
-#   The udp port that corosync will use to do its multcast communication.  Be
+#   The udp port that corosync will use to do its multicast communication.  Be
 #   aware that corosync used this defined port plus minus one.
+#   Can be specified as an array to have multiple rings (multicast only).
 #
 # [*multicast_address*]
 #   An IP address that has been reserved for multicast traffic.  This is the
 #   default way that Corosync accomplishes communication across the cluster.
+#   Use 'broadcast' to have broadcast instead
+#   Can be specified as an array to have multiple rings (multicast only).
 #
 # [*unicast_addresses*]
 #   An array of IP addresses that make up the cluster's members.  These are
@@ -47,6 +56,15 @@
 #   True/false parameter specifying whether Corosync should produce debug
 #   output in its logs.
 #
+# [*rrp_mode*]
+#   Mode of redundant ring. May be none, active, or passive.
+#
+# [*ttl*]
+#   Time To Live (multicast only).
+#
+# [*packages*]
+#   Define the list of software packages which should be installed.
+#
 # === Examples
 #
 #  class { 'corosync':
@@ -65,6 +83,7 @@
 #
 class corosync(
   $enable_secauth     = 'UNSET',
+  $authkey_source     = 'file',
   $authkey            = '/etc/puppet/ssl/certs/ca.pem',
   $threads            = 'UNSET',
   $port               = 'UNSET',
@@ -74,6 +93,9 @@ class corosync(
   $force_online       = false,
   $check_standby      = false,
   $debug              = false,
+  $rrp_mode           = 'none',
+  $ttl                = false,
+  $packages           = ['corosync', 'pacemaker'],
 ) {
 
   # Making it possible to provide data with parameterized class declarations or
@@ -150,17 +172,38 @@ class corosync(
   # Puppet can join the cluster.  Totally not ideal, going to come up with
   # something better.
   if $enable_secauth_real == 'on' {
-    file { '/etc/corosync/authkey':
-      ensure  => file,
-      source  => $authkey,
-      mode    => '0400',
-      owner   => 'root',
-      group   => 'root',
-      notify  => Service['corosync'],
+    case $authkey_source {
+      'file': {
+        file { '/etc/corosync/authkey':
+          ensure  => file,
+          source  => $authkey,
+          mode    => '0400',
+          owner   => 'root',
+          group   => 'root',
+          notify  => Service['corosync'],
+          require => Package['corosync'],
+        }
+      }
+      'string': {
+        file { '/etc/corosync/authkey':
+          ensure  => file,
+          content => $authkey,
+          mode    => '0400',
+          owner   => 'root',
+          group   => 'root',
+          notify  => Service['corosync'],
+          require => Package['corosync'],
+        }
+      }
+      default: {
+        fail("authkey_source must be either 'file' or 'string'.")
+      }
     }
   }
 
-  package { [ 'corosync', 'pacemaker' ]: ensure => present }
+  package {$packages:
+    ensure => present,
+  }
 
   # Template uses:
   # - $unicast_addresses
@@ -189,14 +232,23 @@ class corosync(
     require => Package['corosync']
   }
 
-  if $::osfamily == 'Debian' {
-    exec { 'enable corosync':
-      command => 'sed -i s/START=no/START=yes/ /etc/default/corosync',
-      path    => [ '/bin', '/usr/bin' ],
-      unless  => 'grep START=yes /etc/default/corosync',
-      require => Package['corosync'],
-      before  => Service['corosync'],
+  case $::osfamily {
+    'RedHat': {
+      exec { 'enable corosync':
+        require => Package['corosync'],
+        before  => Service['corosync'],
+      }
     }
+    'Debian': {
+      exec { 'enable corosync':
+        command => 'sed -i s/START=no/START=yes/ /etc/default/corosync',
+        path    => [ '/bin', '/usr/bin' ],
+        unless  => 'grep START=yes /etc/default/corosync',
+        require => Package['corosync'],
+        before  => Service['corosync'],
+      }
+    }
+    default: {}
   }
 
   if $check_standby == true {
